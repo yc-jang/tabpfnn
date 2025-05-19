@@ -97,3 +97,48 @@ class Clustering:
         self.run_kmeans(user_control_columns, k)
         self.make_representatives()
         return self.predict_other_cols(user_input)
+
+
+import pandas as pd
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
+class UserControlInputWidget:
+    def __init__(self, user_control_columns: list[str], callback_function=None):
+        """
+        user_control_columns: 입력 받을 컬럼 리스트
+        callback_function: 입력 완료 시 실행할 함수 (예: Clustering.process)
+        """
+        self.user_control_columns = user_control_columns
+        self.callback_function = callback_function
+        self.widgets_dict = {
+            col: widgets.FloatText(description=col, layout=widgets.Layout(width='200px'))
+            for col in user_control_columns
+        }
+        self.submit_button = widgets.Button(description="입력 완료", button_style='success')
+        self.output = widgets.Output()
+        self.user_input_df = None
+        self._build_ui()
+
+    def _build_ui(self):
+        widget_list = list(self.widgets_dict.values())
+        rows = [widgets.HBox(widget_list[i:i+3]) for i in range(0, len(widget_list), 3)]
+        form = widgets.VBox(rows + [self.submit_button, self.output])
+        display(form)
+        self.submit_button.on_click(self._on_submit)
+
+    def _on_submit(self, b):
+        with self.output:
+            clear_output()
+            values = {col: widget.value for col, widget in self.widgets_dict.items()}
+            self.user_input_df = pd.DataFrame([values])
+            display(widgets.HTML("<b>입력값 확인:</b>"))
+            display(self.user_input_df)
+
+            if self.callback_function:
+                result = self.callback_function(self.user_input_df)
+                display(widgets.HTML("<b>클러스터 기반 예측 결과:</b>"))
+                display(result)
+
+    def get_user_input(self) -> pd.DataFrame:
+        return self.user_input_df
