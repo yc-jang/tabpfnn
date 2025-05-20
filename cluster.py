@@ -241,3 +241,54 @@ def interpret_prediction_change(
             """))
 
     return pred
+
+
+def interpret_prediction_change_simple(
+    model_runner,
+    user_input_df: pd.DataFrame,
+    predicted_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    previous_prediction: Optional[np.ndarray] = None,
+    shap_explain: bool = True,
+    diff_threshold: float = 1e-5
+):
+    """
+    예측값 해석 (민감도 분석 제거) + SHAP 기반 설명 제공
+    """
+    pred = model_runner.predict(predicted_df)
+    display(HTML(f"<h4>예측값: {pred.round(5).tolist()}</h4>"))
+
+    if previous_prediction is not None:
+        change = np.abs(pred - previous_prediction)
+        if np.all(change < diff_threshold):
+            display(HTML("<div style='color:red; font-weight:bold;'>※ 입력을 변경하였지만 예측값이 동일하거나 거의 변화하지 않았습니다.</div>"))
+            display(HTML("""
+            <p style="font-size:14px;">
+            이는 다음과 같은 이유로 발생할 수 있습니다:
+            <ul style="font-size:13px;">
+              <li>해당 입력값이 모델 내부의 트리 구조에서 같은 분기 경로를 따를 경우, 결과는 동일하게 유지됩니다.</li>
+              <li>SHAP에서 높은 영향도를 가진 변수라 하더라도, 현재 입력 조합에서는 영향력이 미미할 수 있습니다.</li>
+              <li>모델이 변수 간 상호작용(Interaction)을 고려하기 때문에, 단일 변수 변화로는 예측에 영향을 주지 않을 수 있습니다.</li>
+              <li>즉, 전체 모델 학습 구조 상 특정 그룹(leaf)에 속하게 되어 평균 예측값이 고정됩니다.</li>
+            </ul>
+            </p>
+            """))
+
+            aligned_input = predicted_df[model_runner.model.feature_names_in_]
+            explainer = shap.Explainer(model_runner.model)
+            shap_values = explainer(aligned_input)
+
+            if shap_explain:
+                display(HTML("<b>SHAP 영향도 분석 (Waterfall Plot)</b>"))
+                shap.plots.waterfall(shap_values[0])
+
+            display(HTML("""
+            <p style="font-size:13px; color:gray;">
+            ※ SHAP 그래프는 현재 예측에서 어떤 변수가 상대적으로 영향을 많이 주었는지를 보여줍니다.<br>
+            다만 영향도가 높게 나타난다고 해서, 해당 변수를 바꿨을 때 항상 예측이 바뀐다는 보장은 없습니다.<br>
+            이는 모델이 다수의 변수 조합을 기반으로 판단하기 때문입니다.
+            </p>
+            """))
+
+    return pred
+
