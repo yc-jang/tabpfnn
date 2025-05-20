@@ -142,3 +142,102 @@ class UserControlInputWidget:
 
     def get_user_input(self) -> pd.DataFrame:
         return self.user_input_df
+
+import pandas as pd
+import numpy as np
+from typing import Optional
+from IPython.display import display, HTML
+import shap
+import plotly.graph_objects as go
+
+def interpret_prediction_change(
+    model_runner,
+    user_input_df: pd.DataFrame,
+    predicted_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    previous_prediction: Optional[np.ndarray] = None,
+    sensitivity_feature: Optional[str] = None,
+    sensitivity_values: Optional[list] = None,
+    shap_explain: bool = True,
+    diff_threshold: float = 1e-5
+):
+    """
+    예측값을 기반으로 입력 변화에 대한 반응을 해석하고,
+    변화가 없을 경우 사용자에게 그 이유와 인사이트를 제공하는 함수.
+    """
+    # 1. 예측값 계산
+    pred = model_runner.predict(predicted_df)
+    display(HTML(f"<h4>예측값: {pred.round(5).tolist()}</h4>"))
+
+    # 2. 예측값 변화 여부 확인
+    if previous_prediction is not None:
+        change = np.abs(pred - previous_prediction)
+        if np.all(change < diff_threshold):
+            display(HTML("<div style='color:red; font-weight:bold;'>※ 입력을 변경하였지만 예측값이 동일하거나 거의 변화하지 않았습니다.</div>"))
+            display(HTML("""
+            <p style="font-size:14px;">
+            입력하신 값이 AI가 학습한 판단 경로에서는 영향을 거의 주지 않는다고 해석됩니다.<br>
+            이는 모델이 해당 입력을 이미 알고 있는 특정 그룹으로 분류하고, 해당 그룹의 평균적인 결과를 반환하기 때문입니다.
+            </p>
+            """))
+
+            # 3. SHAP 영향도 분석
+            aligned_input = predicted_df[model_runner.model.feature_names_in_]
+            explainer = shap.Explainer(model_runner.model)
+            shap_values = explainer(aligned_input)
+
+            if shap_explain:
+                display(HTML("<b>SHAP 영향도 분석 (Waterfall Plot)</b>"))
+                shap.plots.waterfall(shap_values[0])
+
+            # 4. SHAP 기준 상위 feature 민감도 분석
+            shap_df = pd.DataFrame(shap_values.values, columns=aligned_input.columns)
+            shap_mean = shap_df.abs().mean().sort_values(ascending=False)
+            top_feature = sensitivity_feature or shap_mean.index[0]
+
+            display(HTML(f"<b>주요 변수 '{top_feature}'에 대한 민감도 분석</b>"))
+
+            if sensitivity_values is None:
+                base_val = user_input_df[top_feature].iloc[0]
+                sensitivity_values = [base_val * ratio for ratio in [0.8, 0.9, 1.0, 1.1, 1.2]]
+
+            result_rows = []
+            for val in sensitivity_values:
+                modified = user_input_df.copy()
+                modified[top_feature] = val
+
+                full_input = []
+                for _, row in modified.iterrows():
+                    d = {}
+                    for col in model_runner.model.feature_names_in_:
+                        if col in row:
+                            d[col] = row[col]
+                        else:
+                            d[col] = reference_df[col].mean() if col in reference_df else 0
+                    full_input.append(d)
+
+                full_df = pd.DataFrame(full_input)
+                p = model_runner.predict(full_df)[0]
+                result_rows.append((val, p))
+
+            # 5. 민감도 그래프
+            values, preds = zip(*result_rows)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=values, y=preds, mode='lines+markers', name='Prediction'))
+            fig.update_layout(
+                title=f"'{top_feature}' 변수 변화에 따른 예측값 민감도",
+                xaxis_title=top_feature,
+                yaxis_title="예측값",
+                template="plotly_white",
+                height=400
+            )
+            fig.show()
+
+            display(HTML("""
+            <p style="font-size:13px; color:gray;">
+            ※ 위 그래프는 주요 변수의 값이 바뀔 때 예측이 어떻게 달라지는지를 보여줍니다.<br>
+            예측값 변화가 거의 없다면, 해당 변수는 현재 입력 조합에서는 영향력이 낮은 것입니다.
+            </p>
+            """))
+
+    return pred
