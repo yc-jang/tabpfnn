@@ -292,3 +292,76 @@ def interpret_prediction_change_simple(
 
     return pred
 
+def interpret_prediction_change_full(
+    model_runner,
+    user_input_df: pd.DataFrame,
+    predicted_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    previous_prediction: Optional[np.ndarray] = None,
+    shap_explain: bool = True,
+    diff_threshold: float = 1e-5
+):
+    """
+    예측 결과 해석: 변화 감지 + 사용자 친화적 설명 + SHAP 분석 + 트리 구조 근거 포함
+    """
+    import shap
+    from IPython.display import display, HTML
+    import pandas as pd
+
+    pred = model_runner.predict(predicted_df)
+    display(HTML(f"<h4>예측값: {pred.round(5).tolist()}</h4>"))
+
+    if previous_prediction is not None:
+        change = np.abs(pred - previous_prediction)
+        if np.all(change < diff_threshold):
+            display(HTML("<div style='color:red; font-weight:bold;'>※ 입력을 변경하였지만 예측값이 동일하거나 거의 변화하지 않았습니다.</div>"))
+            display(HTML("""
+            <p style="font-size:14px;">
+            입력값 변화에도 예측이 고정되는 이유는 다음과 같습니다:
+            <ul style="font-size:13px;">
+              <li><b>트리 구조의 분기 조건</b>에 따라 현재 입력이 동일한 리프 노드에 도달할 수 있습니다.</li>
+              <li><b>SHAP에서 중요도가 높아도</b>, 현재 입력 조건에서는 영향력이 0에 가까울 수 있습니다.</li>
+              <li><b>변수 간 상호작용</b>이 중요한 경우, 단일 변수 변화만으로는 모델 반응이 없습니다.</li>
+            </ul>
+            아래에 해당 예측에서 실제 모델이 어떻게 반응했는지를 정량적으로 제시합니다.
+            </p>
+            """))
+
+            # 1. SHAP 분석
+            aligned_input = predicted_df[model_runner.model.feature_names_in_]
+            explainer = shap.Explainer(model_runner.model)
+            shap_values = explainer(aligned_input)
+
+            if shap_explain:
+                display(HTML("<b>1. SHAP 영향도 분석 (Waterfall Plot)</b>"))
+                shap.plots.waterfall(shap_values[0])
+
+            # 2. 모델의 트리 split 빈도 확인
+            booster = model_runner.model.get_booster()
+            split_importance = booster.get_score(importance_type='weight')
+            split_df = pd.DataFrame.from_dict(split_importance, orient='index', columns=['split_count']).sort_values(by='split_count', ascending=False)
+            display(HTML("<b>2. 모델이 자주 분기한 변수 (split count 기준)</b>"))
+            display(split_df.head(10).style.format({'split_count': '{:.0f}'}))
+
+            # 3. 해당 변수의 트리 split 경로 확인
+            shap_df = pd.DataFrame(shap_values.values, columns=aligned_input.columns)
+            top_feature = shap_df.abs().mean().sort_values(ascending=False).index[0]
+
+            tree_df = booster.trees_to_dataframe()
+            feature_splits = tree_df[tree_df['Feature'] == top_feature]
+
+            if feature_splits.empty:
+                display(HTML(f"<b>3. '{top_feature}' 변수는 트리 split에 사용되지 않았습니다.</b>"))
+            else:
+                display(HTML(f"<b>3. '{top_feature}' 변수의 분기 조건 예시</b>"))
+                display(feature_splits[['Tree', 'Node', 'Split', 'Yes', 'No', 'Missing']].head(5))
+
+            display(HTML(f"""
+            <p style="font-size:13px; color:gray;">
+            ※ 위 split 조건은 모델이 '{top_feature}' 변수를 어떤 조건에서 활용했는지를 보여줍니다.<br>
+            그러나 현재 입력이 이 조건을 만족하지 않으면 예측값에는 영향이 없을 수 있습니다.
+            </p>
+            """))
+
+    return pred
+
