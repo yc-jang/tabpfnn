@@ -103,3 +103,93 @@ def plot_from_saved_json(file_path: str):
         )
 
         fig.show()
+
+import json
+import pandas as pd
+import plotly.express as px
+from typing import List, Dict, Any
+from functools import reduce
+
+
+def stack_flat_values(values: List[float], index_list: List[Any], name: str) -> pd.DataFrame:
+    """
+    Converts a list of values and corresponding (possibly duplicate) index list
+    into a DataFrame with [index, step, value]
+    """
+    if len(values) != len(index_list):
+        raise ValueError(f"Length mismatch: values ({len(values)}), index ({len(index_list)})")
+
+    df = pd.DataFrame({
+        'index': index_list,
+        name: values
+    })
+
+    # Assign step per repeated index
+    df['step'] = df.groupby('index').cumcount()
+    return df
+
+
+def plot_predictions_line_safe(
+    y_test: List[float],
+    preds_dict: Dict[str, List[float]],
+    index: List[Any],
+    target: str
+):
+    """
+    Robust line plot for list-type predictions, where index may contain repeated entries.
+    Produces multi-line subplot per index with step-based x-axis.
+    """
+    # 1. Convert y_true
+    df_y = stack_flat_values(y_test, index, 'y_true')
+    dfs = [df_y]
+
+    # 2. Convert model predictions
+    for model_name, pred_values in preds_dict.items():
+        df_pred = stack_flat_values(pred_values, index, model_name)
+        dfs.append(df_pred)
+
+    # 3. Merge all on [index, step]
+    df_merged = reduce(lambda left, right: pd.merge(left, right, on=['index', 'step'], how='outer'), dfs)
+
+    # 4. Melt into long-form for plotly
+    df_long = df_merged.melt(id_vars=['index', 'step'], var_name='model', value_name='value')
+    df_long = df_long.sort_values(by=['index', 'step'])
+
+    # 5. Plot
+    fig = px.line(
+        df_long,
+        x='step',
+        y='value',
+        color='model',
+        facet_col='index',
+        title=f"Target: {target} - Multi-step Prediction by Index"
+    )
+
+    return fig
+
+
+def plot_from_saved_json(file_path: str):
+    """
+    Loads JSON file with saved prediction results and calls plot_predictions_line_safe
+    """
+    with open(file_path, 'r', encoding='utf-8') as f:
+        result = json.load(f)
+
+    for target, model_result in result.items():
+        y_test = model_result['y_test']
+        index = model_result['index']
+
+        preds_dict = {
+            'tabpfn': model_result['tabpfn'],
+            'xgb': model_result['xgb'],
+            'ensemble': model_result['ensemble']
+        }
+
+        fig = plot_predictions_line_safe(
+            y_test=y_test,
+            preds_dict=preds_dict,
+            index=index,
+            target=target
+        )
+
+        fig.show()
